@@ -10,17 +10,18 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Runs one submission to completion inside a short-lived, locked-down Docker
- * container: no network, capped memory/CPU/pids, read-only root filesystem,
- * dropped capabilities. The host also enforces its own watchdog on top of the
- * in-container `timeout`, and force-kills the container if it overruns.
+ * Runs one submission to completion as a plain OS process in a fresh temp
+ * directory (no Docker). Isolation is best-effort since there is no
+ * container/namespace boundary here: a shell-level ulimit caps address
+ * space and process count, and both an in-shell `timeout` and this class's
+ * own watchdog cap wall-clock time. This trades some isolation strength for
+ * running on hosts (e.g. Render) that don't expose a Docker daemon inside
+ * the app's own container.
  */
 @Component
 public class DockerCodeRunner {
@@ -36,14 +37,14 @@ public class DockerCodeRunner {
     public ExecutionResult run(Language language, String code, String stdin) throws IOException, InterruptedException {
         AppProperties.Execution cfg = props.getExecution();
         Path workDir = Files.createTempDirectory("job-");
-        String containerName = "exec-" + UUID.randomUUID();
 
         try {
             Path sourceFile = workDir.resolve(language.getFileName());
             Files.writeString(sourceFile, code == null ? "" : code);
 
-            List<String> command = buildDockerCommand(language, containerName, workDir, cfg);
+            List<String> command = buildShellCommand(language, cfg);
             ProcessBuilder pb = new ProcessBuilder(command);
+            pb.directory(workDir.toFile());
             Process process = pb.start();
 
             if (stdin != null && !stdin.isEmpty()) {
@@ -53,8 +54,8 @@ public class DockerCodeRunner {
 
             StreamGobbler stdoutGobbler = new StreamGobbler(process.getInputStream(), cfg.getMaxOutputBytes());
             StreamGobbler stderrGobbler = new StreamGobbler(process.getErrorStream(), cfg.getMaxOutputBytes());
-            Thread outThread = new Thread(stdoutGobbler, "stdout-gobbler-" + containerName);
-            Thread errThread = new Thread(stderrGobbler, "stderr-gobbler-" + containerName);
+            Thread outThread = new Thread(stdoutGobbler, "stdout-gobbler-" + process.pid());
+            Thread errThread = new Thread(stderrGobbler, "stderr-gobbler-" + process.pid());
             outThread.start();
             errThread.start();
 
@@ -64,8 +65,7 @@ public class DockerCodeRunner {
             long elapsed = System.currentTimeMillis() - start;
 
             if (!finished) {
-                killContainer(containerName);
-                process.destroyForcibly();
+                killProcessTree(process);
                 outThread.join(2000);
                 errThread.join(2000);
                 return new ExecutionResult(ExecutionResult.TIMEOUT, stdoutGobbler.getOutput(), stderrGobbler.getOutput(), null, elapsed);
@@ -82,46 +82,36 @@ public class DockerCodeRunner {
         }
     }
 
-    private List<String> buildDockerCommand(Language language, String containerName, Path workDir, AppProperties.Execution cfg) {
-        List<String> cmd = new ArrayList<>();
-        cmd.add("docker");
-        cmd.add("run");
-        cmd.add("--rm");
-        cmd.add("-i");
-        cmd.add("--name");
-        cmd.add(containerName);
-        cmd.add("--network");
-        cmd.add("none");
-        cmd.add("--memory");
-        cmd.add(cfg.getMemoryLimit());
-        cmd.add("--memory-swap");
-        cmd.add(cfg.getMemoryLimit());
-        cmd.add("--cpus");
-        cmd.add(cfg.getCpuLimit());
-        cmd.add("--pids-limit");
-        cmd.add("64");
-        cmd.add("--security-opt");
-        cmd.add("no-new-privileges");
-        cmd.add("--cap-drop");
-        cmd.add("ALL");
-        cmd.add("--read-only");
-        cmd.add("--tmpfs");
-        cmd.add("/tmp:rw,size=16m");
-        cmd.add("-v");
-        cmd.add(workDir.toAbsolutePath() + ":/box:rw");
-        cmd.add("-w");
-        cmd.add("/box");
-        cmd.add(language.getImage());
-        cmd.addAll(language.buildCommand(cfg.getTimeoutSeconds()));
-        return cmd;
+    private List<String> buildShellCommand(Language language, AppProperties.Execution cfg) {
+        long memoryMb = parseMemoryLimitMb(cfg.getMemoryLimit());
+        String ulimits = language.isMemoryUlimitSafe()
+                ? "ulimit -v " + (memoryMb * 1024L) + " -u 64 2>/dev/null; "
+                : "ulimit -u 64 2>/dev/null; ";
+        String script = ulimits + language.buildCommand(cfg.getTimeoutSeconds(), memoryMb);
+        return List.of("sh", "-c", script);
     }
 
-    private void killContainer(String containerName) {
+    /** Parses limits like "256m" / "1g" / "512k" into megabytes. */
+    private long parseMemoryLimitMb(String memoryLimit) {
+        String value = memoryLimit.trim().toLowerCase();
         try {
-            new ProcessBuilder("docker", "kill", containerName).start().waitFor(5, TimeUnit.SECONDS);
-        } catch (IOException | InterruptedException e) {
-            log.warn("Failed to force-kill container {}", containerName, e);
+            if (value.endsWith("g")) {
+                return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L;
+            } else if (value.endsWith("m")) {
+                return Long.parseLong(value.substring(0, value.length() - 1));
+            } else if (value.endsWith("k")) {
+                return Math.max(1, Long.parseLong(value.substring(0, value.length() - 1)) / 1024L);
+            }
+            return Long.parseLong(value) / (1024L * 1024L);
+        } catch (NumberFormatException e) {
+            log.warn("Could not parse memory limit '{}', defaulting to 256m", memoryLimit);
+            return 256L;
         }
+    }
+
+    private void killProcessTree(Process process) {
+        process.descendants().forEach(ProcessHandle::destroyForcibly);
+        process.destroyForcibly();
     }
 
     private void deleteRecursively(Path path) {

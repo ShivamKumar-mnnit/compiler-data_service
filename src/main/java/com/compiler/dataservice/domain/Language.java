@@ -3,45 +3,47 @@ package com.compiler.dataservice.domain;
 import com.compiler.dataservice.exception.UnsupportedLanguageException;
 
 import java.util.List;
-import java.util.function.IntFunction;
+import java.util.function.BiFunction;
 
 /**
- * One entry per supported language: which Docker image runs it, what the
- * source file must be named, and the compile+run command executed inside the
- * container. Everything is combined into a single `sh -c "..."` so compile
- * errors (non-zero exit, stderr populated) short-circuit the run step.
+ * One entry per supported language: what the source file must be named, the
+ * binary required on PATH, and the compile+run shell snippet executed
+ * directly on the host (no container). The run step is wrapped in `timeout`
+ * so compile errors (non-zero exit, stderr populated) short-circuit before
+ * it, and a runaway program is still killed.
  */
 public enum Language {
 
-    C("c", "gcc:13", "Main.c",
-            timeout -> List.of("sh", "-c",
-                    "gcc -O2 -o Main Main.c && timeout " + timeout + " ./Main")),
+    C("c", "Main.c", List.of("gcc"), true,
+            (timeout, memoryMb) -> "gcc -O2 -o Main Main.c && timeout " + timeout + " ./Main"),
 
-    CPP("cpp", "gcc:13", "Main.cpp",
-            timeout -> List.of("sh", "-c",
-                    "g++ -O2 -o Main Main.cpp && timeout " + timeout + " ./Main")),
+    CPP("cpp", "Main.cpp", List.of("g++"), true,
+            (timeout, memoryMb) -> "g++ -O2 -o Main Main.cpp && timeout " + timeout + " ./Main"),
 
-    JAVA("java", "eclipse-temurin:21-jdk", "Main.java",
-            timeout -> List.of("sh", "-c",
-                    "javac Main.java && timeout " + timeout + " java Main")),
+    // No shell-level memory ulimit: the JVM reserves large virtual address
+    // space for heap/metaspace on startup regardless of actual usage, so
+    // `ulimit -v` would make it fail to launch. Cap the heap directly instead.
+    JAVA("java", "Main.java", List.of("javac", "java"), false,
+            (timeout, memoryMb) -> "javac Main.java && timeout " + timeout + " java -Xmx" + memoryMb + "m Main"),
 
-    PYTHON("python", "python:3.11-slim", "Main.py",
-            timeout -> List.of("sh", "-c",
-                    "timeout " + timeout + " python3 Main.py")),
+    PYTHON("python", "Main.py", List.of("python3"), true,
+            (timeout, memoryMb) -> "timeout " + timeout + " python3 Main.py"),
 
-    JAVASCRIPT("javascript", "node:20-slim", "Main.js",
-            timeout -> List.of("sh", "-c",
-                    "timeout " + timeout + " node Main.js"));
+    JAVASCRIPT("javascript", "Main.js", List.of("node"), true,
+            (timeout, memoryMb) -> "timeout " + timeout + " node Main.js");
 
     private final String code;
-    private final String image;
     private final String fileName;
-    private final IntFunction<List<String>> commandBuilder;
+    private final List<String> requiredBinaries;
+    private final boolean applyMemoryUlimit;
+    private final BiFunction<Integer, Long, String> commandBuilder;
 
-    Language(String code, String image, String fileName, IntFunction<List<String>> commandBuilder) {
+    Language(String code, String fileName, List<String> requiredBinaries, boolean applyMemoryUlimit,
+             BiFunction<Integer, Long, String> commandBuilder) {
         this.code = code;
-        this.image = image;
         this.fileName = fileName;
+        this.requiredBinaries = requiredBinaries;
+        this.applyMemoryUlimit = applyMemoryUlimit;
         this.commandBuilder = commandBuilder;
     }
 
@@ -56,15 +58,21 @@ public enum Language {
         throw new UnsupportedLanguageException("Unsupported language: " + code);
     }
 
-    public String getImage() {
-        return image;
-    }
-
     public String getFileName() {
         return fileName;
     }
 
-    public List<String> buildCommand(int timeoutSeconds) {
-        return commandBuilder.apply(timeoutSeconds);
+    /** Binaries this language needs on PATH, checked at startup. */
+    public List<String> getRequiredBinaries() {
+        return requiredBinaries;
+    }
+
+    /** Whether the shell-level `ulimit -v` memory cap is safe to apply for this language. */
+    public boolean isMemoryUlimitSafe() {
+        return applyMemoryUlimit;
+    }
+
+    public String buildCommand(int timeoutSeconds, long memoryLimitMb) {
+        return commandBuilder.apply(timeoutSeconds, memoryLimitMb);
     }
 }
