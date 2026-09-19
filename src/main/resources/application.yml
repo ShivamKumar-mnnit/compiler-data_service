@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: compiler-data-service
+
+app:
+  security:
+    # Comma-separated list of accepted API keys, sent by callers as the
+    # "Authorization" header. Override via the API_KEYS env var in production.
+    api-keys: ${API_KEYS:anVzdGZrb2Zm}
+
+  queue:
+    # Threads actively running docker containers at once.
+    core-pool-size: 2
+    max-pool-size: 4
+    # Jobs allowed to wait once all threads are busy. Beyond this, new
+    # requests are rejected immediately with 429 "try again later".
+    capacity: 20
+
+  execution:
+    # Wall-clock seconds given to the compiled/interpreted program itself
+    # (enforced both by the in-container `timeout` and the host watchdog).
+    timeout-seconds: 10
+    # Extra seconds of slack before the host force-kills the container.
+    grace-period-seconds: 3
+    # Max seconds the caller's HTTP request will block waiting on a result
+    # before the service gives up on the job (queue wait + run time).
+    total-timeout-seconds: 25
+    memory-limit: 256m
+    cpu-limit: "0.5"
+    max-output-bytes: 65536
+
+  rate-limit:
+    # Token-bucket per API key.
+    capacity: 20
+    refill-tokens: 20
+    refill-period-seconds: 60
