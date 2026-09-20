@@ -24,7 +24,8 @@ public enum Language {
     // space for heap/metaspace on startup regardless of actual usage, so
     // `ulimit -v` would make it fail to launch. Cap the heap directly instead.
     JAVA("java", "Main.java", List.of("javac", "java"), false,
-            (timeout, memoryMb) -> "javac Main.java && timeout " + timeout + " java -Xmx" + memoryMb + "m Main"),
+            (timeout, memoryMb) -> "javac Main.java && timeout " + timeout
+                    + " java -Xmx" + memoryMb + "m -XX:+ExitOnOutOfMemoryError Main"),
 
     PYTHON("python", "Main.py", List.of("python3"), true,
             (timeout, memoryMb) -> "timeout " + timeout + " python3 Main.py"),

@@ -65,18 +65,31 @@ public class DockerCodeRunner {
             long elapsed = System.currentTimeMillis() - start;
 
             if (!finished) {
+                // Our own watchdog fired: the in-shell `timeout` didn't kill it in time
+                // (e.g. a runaway child process it spawned), so force-kill the whole tree.
                 killProcessTree(process);
                 outThread.join(2000);
                 errThread.join(2000);
-                return new ExecutionResult(ExecutionResult.TIMEOUT, stdoutGobbler.getOutput(), stderrGobbler.getOutput(), null, elapsed);
+                return new ExecutionResult(ExecutionResult.TIME_LIMIT_EXCEEDED, stdoutGobbler.getOutput(), stderrGobbler.getOutput(), null, elapsed);
             }
 
             outThread.join(2000);
             errThread.join(2000);
             int exitCode = process.exitValue();
-            String status = exitCode == 0 ? ExecutionResult.SUCCESS
-                    : (exitCode == 124 ? ExecutionResult.TIMEOUT : ExecutionResult.ERROR);
-            return new ExecutionResult(status, stdoutGobbler.getOutput(), stderrGobbler.getOutput(), exitCode, elapsed);
+            String stderr = stderrGobbler.getOutput();
+            String status;
+            if (exitCode == 0) {
+                status = ExecutionResult.SUCCESS;
+            } else if (exitCode == 124) {
+                // `timeout` in the shell script kills with this exit code once the
+                // per-run wall-clock limit is reached - this is the infinite-loop case.
+                status = ExecutionResult.TIME_LIMIT_EXCEEDED;
+            } else if (looksLikeMemoryLimitExceeded(exitCode, stderr)) {
+                status = ExecutionResult.MEMORY_LIMIT_EXCEEDED;
+            } else {
+                status = ExecutionResult.ERROR;
+            }
+            return new ExecutionResult(status, stdoutGobbler.getOutput(), stderr, exitCode, elapsed);
         } finally {
             deleteRecursively(workDir);
         }
@@ -107,6 +120,25 @@ public class DockerCodeRunner {
             log.warn("Could not parse memory limit '{}', defaulting to 256m", memoryLimit);
             return 256L;
         }
+    }
+
+    /**
+     * There's no cgroup here to report "OOM" directly, so this infers it from
+     * how the process died: `ulimit -v` makes allocation calls fail rather
+     * than killing the process outright, so most runtimes either crash with a
+     * memory-specific message or get taken down by SIGABRT/SIGSEGV/SIGKILL
+     * (exit codes 128+signal) as a direct result of that failed allocation.
+     */
+    private boolean looksLikeMemoryLimitExceeded(int exitCode, String stderr) {
+        if (exitCode == 134 || exitCode == 137 || exitCode == 139) {
+            return true;
+        }
+        String s = stderr == null ? "" : stderr.toLowerCase();
+        return s.contains("outofmemoryerror")
+                || s.contains("cannot allocate memory")
+                || s.contains("bad_alloc")
+                || s.contains("memoryerror")
+                || s.contains("javascript heap out of memory");
     }
 
     private void killProcessTree(Process process) {
