@@ -31,9 +31,14 @@ public class AppProperties {
 
     public static class Security {
         private List<String> apiKeys = new ArrayList<>();
+        // Origins allowed to call /api/** from a browser (CORS). "*" allows any.
+        private List<String> allowedOrigins = new ArrayList<>(List.of("*"));
 
         public List<String> getApiKeys() { return apiKeys; }
         public void setApiKeys(List<String> apiKeys) { this.apiKeys = apiKeys; }
+
+        public List<String> getAllowedOrigins() { return allowedOrigins; }
+        public void setAllowedOrigins(List<String> allowedOrigins) { this.allowedOrigins = allowedOrigins; }
     }
 
     public static class Queue {
