@@ -2,15 +2,12 @@ package com.compiler.dataservice.exec;
 
 import com.compiler.dataservice.config.AppProperties;
 import com.compiler.dataservice.domain.Language;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -26,8 +23,6 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class DockerCodeRunner {
 
-    private static final Logger log = LoggerFactory.getLogger(DockerCodeRunner.class);
-
     private final AppProperties props;
 
     public DockerCodeRunner(AppProperties props) {
@@ -42,7 +37,7 @@ public class DockerCodeRunner {
             Path sourceFile = workDir.resolve(language.getFileName());
             Files.writeString(sourceFile, code == null ? "" : code);
 
-            List<String> command = buildShellCommand(language, cfg);
+            List<String> command = ShellCommandBuilder.build(language, cfg.getTimeoutSeconds(), cfg.getMemoryLimit());
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workDir.toFile());
             Process process = pb.start();
@@ -84,79 +79,19 @@ public class DockerCodeRunner {
                 // `timeout` in the shell script kills with this exit code once the
                 // per-run wall-clock limit is reached - this is the infinite-loop case.
                 status = ExecutionResult.TIME_LIMIT_EXCEEDED;
-            } else if (looksLikeMemoryLimitExceeded(exitCode, stderr)) {
+            } else if (ExitDiagnostics.looksLikeMemoryLimitExceeded(exitCode, stderr)) {
                 status = ExecutionResult.MEMORY_LIMIT_EXCEEDED;
             } else {
                 status = ExecutionResult.ERROR;
             }
             return new ExecutionResult(status, stdoutGobbler.getOutput(), stderr, exitCode, elapsed);
         } finally {
-            deleteRecursively(workDir);
+            TempDirs.deleteRecursively(workDir);
         }
-    }
-
-    private List<String> buildShellCommand(Language language, AppProperties.Execution cfg) {
-        long memoryMb = parseMemoryLimitMb(cfg.getMemoryLimit());
-        String ulimits = language.isMemoryUlimitSafe()
-                ? "ulimit -v " + (memoryMb * 1024L) + " -u 64 2>/dev/null; "
-                : "ulimit -u 64 2>/dev/null; ";
-        String script = ulimits + language.buildCommand(cfg.getTimeoutSeconds(), memoryMb);
-        return List.of("sh", "-c", script);
-    }
-
-    /** Parses limits like "256m" / "1g" / "512k" into megabytes. */
-    private long parseMemoryLimitMb(String memoryLimit) {
-        String value = memoryLimit.trim().toLowerCase();
-        try {
-            if (value.endsWith("g")) {
-                return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L;
-            } else if (value.endsWith("m")) {
-                return Long.parseLong(value.substring(0, value.length() - 1));
-            } else if (value.endsWith("k")) {
-                return Math.max(1, Long.parseLong(value.substring(0, value.length() - 1)) / 1024L);
-            }
-            return Long.parseLong(value) / (1024L * 1024L);
-        } catch (NumberFormatException e) {
-            log.warn("Could not parse memory limit '{}', defaulting to 256m", memoryLimit);
-            return 256L;
-        }
-    }
-
-    /**
-     * There's no cgroup here to report "OOM" directly, so this infers it from
-     * how the process died: `ulimit -v` makes allocation calls fail rather
-     * than killing the process outright, so most runtimes either crash with a
-     * memory-specific message or get taken down by SIGABRT/SIGSEGV/SIGKILL
-     * (exit codes 128+signal) as a direct result of that failed allocation.
-     */
-    private boolean looksLikeMemoryLimitExceeded(int exitCode, String stderr) {
-        if (exitCode == 134 || exitCode == 137 || exitCode == 139) {
-            return true;
-        }
-        String s = stderr == null ? "" : stderr.toLowerCase();
-        return s.contains("outofmemoryerror")
-                || s.contains("cannot allocate memory")
-                || s.contains("bad_alloc")
-                || s.contains("memoryerror")
-                || s.contains("javascript heap out of memory");
     }
 
     private void killProcessTree(Process process) {
         process.descendants().forEach(ProcessHandle::destroyForcibly);
         process.destroyForcibly();
-    }
-
-    private void deleteRecursively(Path path) {
-        try (var walk = Files.walk(path)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (IOException e) {
-                    log.warn("Failed to delete temp file {}", p, e);
-                }
-            });
-        } catch (IOException e) {
-            log.warn("Failed to clean up work dir {}", path, e);
-        }
     }
 }

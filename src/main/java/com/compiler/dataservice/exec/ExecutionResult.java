@@ -11,4 +11,6 @@ public record ExecutionResult(
     public static final String ERROR = "ERROR";
     public static final String TIME_LIMIT_EXCEEDED = "TIME_LIMIT_EXCEEDED";
     public static final String MEMORY_LIMIT_EXCEEDED = "MEMORY_LIMIT_EXCEEDED";
+    public static final String OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED";
+    public static final String KILLED = "KILLED";
 }

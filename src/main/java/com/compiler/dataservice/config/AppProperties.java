@@ -12,6 +12,7 @@ public class AppProperties {
     private Queue queue = new Queue();
     private Execution execution = new Execution();
     private RateLimit rateLimit = new RateLimit();
+    private Interactive interactive = new Interactive();
 
     public Security getSecurity() { return security; }
     public void setSecurity(Security security) { this.security = security; }
@@ -24,6 +25,9 @@ public class AppProperties {
 
     public RateLimit getRateLimit() { return rateLimit; }
     public void setRateLimit(RateLimit rateLimit) { this.rateLimit = rateLimit; }
+
+    public Interactive getInteractive() { return interactive; }
+    public void setInteractive(Interactive interactive) { this.interactive = interactive; }
 
     public static class Security {
         private List<String> apiKeys = new ArrayList<>();
@@ -69,6 +73,24 @@ public class AppProperties {
 
         public String getCpuLimit() { return cpuLimit; }
         public void setCpuLimit(String cpuLimit) { this.cpuLimit = cpuLimit; }
+
+        public int getMaxOutputBytes() { return maxOutputBytes; }
+        public void setMaxOutputBytes(int maxOutputBytes) { this.maxOutputBytes = maxOutputBytes; }
+    }
+
+    public static class Interactive {
+        private int maxConcurrentSessions = 10;
+        // Overall wall-clock budget for one interactive run, from process start
+        // to exit. Unlike the batch endpoint's timeout this must comfortably
+        // cover a human typing answers to multiple prompts, not just CPU time.
+        private int sessionTimeoutSeconds = 300;
+        private int maxOutputBytes = 65536;
+
+        public int getMaxConcurrentSessions() { return maxConcurrentSessions; }
+        public void setMaxConcurrentSessions(int maxConcurrentSessions) { this.maxConcurrentSessions = maxConcurrentSessions; }
+
+        public int getSessionTimeoutSeconds() { return sessionTimeoutSeconds; }
+        public void setSessionTimeoutSeconds(int sessionTimeoutSeconds) { this.sessionTimeoutSeconds = sessionTimeoutSeconds; }
 
         public int getMaxOutputBytes() { return maxOutputBytes; }
         public void setMaxOutputBytes(int maxOutputBytes) { this.maxOutputBytes = maxOutputBytes; }

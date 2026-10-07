@@ -37,3 +37,11 @@ app:
     capacity: 20
     refill-tokens: 20
     refill-period-seconds: 60
+
+  interactive:
+    # Concurrent WebSocket run-sessions allowed across all callers.
+    max-concurrent-sessions: 10
+    # Overall wall-clock budget per session (covers time spent waiting on
+    # the human to type stdin, not just CPU time), after which it is killed.
+    session-timeout-seconds: 300
+    max-output-bytes: 65536
